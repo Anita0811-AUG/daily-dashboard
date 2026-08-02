@@ -1,0 +1,82 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>清除缓存</title>
+  <style>
+    body { font-family: -apple-system, sans-serif; display: flex; align-items: center; justify-content: center; min-height: 100vh; margin: 0; background: #f0f2f5; }
+    .box { background: white; padding: 2rem; border-radius: 16px; text-align: center; max-width: 400px; box-shadow: 0 4px 24px rgba(0,0,0,0.1); }
+    .status { font-size: 1rem; color: #64748b; margin: 1rem 0; min-height: 2rem; }
+    .ok { color: #10b981; font-weight: 600; }
+    .err { color: #ef4444; }
+    button { padding: 0.8rem 2rem; border: none; border-radius: 10px; background: linear-gradient(135deg, #6366f1, #8b5cf6); color: white; font-size: 1rem; font-weight: 600; cursor: pointer; margin: 0.5rem; }
+    button.gray { background: #e2e8f0; color: #64748b; }
+  </style>
+</head>
+<body>
+  <div class="box">
+    <h2>缓存清理工具</h2>
+    <p class="status" id="status">点击下方按钮开始清理...</p>
+    <button onclick="doClear()">清除所有缓存</button>
+    <br>
+    <button class="gray" onclick="goBack()">返回看板</button>
+  </div>
+  <script>
+    async function doClear() {
+      var status = document.getElementById('status');
+      status.className = 'status';
+      status.textContent = '正在清理...';
+
+      try {
+        // 1. 注销所有 Service Worker
+        if ('serviceWorker' in navigator) {
+          var regs = await navigator.serviceWorker.getRegistrations();
+          for (var i = 0; i < regs.length; i++) {
+            await regs[i].unregister();
+            status.textContent += '\n已注销 Service Worker #' + (i+1);
+          }
+        }
+
+        // 2. 清除所有 Cache Storage
+        if ('caches' in window) {
+          var names = await caches.keys();
+          for (var j = 0; j < names.length; j++) {
+            await caches.delete(names[j]);
+            status.textContent += '\n已清除缓存: ' + names[j];
+          }
+        }
+
+        // 3. 清除 localStorage（保留 token）
+        var savedToken = localStorage.getItem('dashboard_github_token');
+        localStorage.clear();
+        if (savedToken) {
+          localStorage.setItem('dashboard_github_token', savedToken);
+          status.textContent += '\n已保留 Token';
+        }
+        status.textContent += '\n已清除 localStorage';
+
+        // 4. 清除 sessionStorage
+        sessionStorage.clear();
+        status.textContent += '\n已清除 sessionStorage';
+
+        status.className = 'status ok';
+        status.textContent += '\n\n清理完成！正在跳转...';
+        status.style.whiteSpace = 'pre-line';
+
+        setTimeout(function() {
+          window.location.href = './daily-dashboard.html';
+        }, 2000);
+
+      } catch(err) {
+        status.className = 'status err';
+        status.textContent = '清理出错: ' + err.message;
+      }
+    }
+
+    function goBack() {
+      window.location.href = './daily-dashboard.html';
+    }
+  </script>
+</body>
+</html>

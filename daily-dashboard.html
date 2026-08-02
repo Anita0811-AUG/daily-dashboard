@@ -1459,16 +1459,15 @@
   </div>
 
   <script src="./_shared/js/echarts.min.js"></script>
-  <script src="./assets/charts.js?v=20260802k"></script>
-  <script src="./assets/ics-parser.js?v=20260802k"></script>
-  <script src="./assets/app.js?v=20260802k"></script>
-  <script src="./assets/sync.js?v=20260802k3"></script>
+  <script src="./assets/charts.js?v=20260802m"></script>
+  <script src="./assets/ics-parser.js?v=20260802m"></script>
+  <script src="./assets/app.js?v=20260802m"></script>
+  <script src="./assets/sync.js?v=20260802m"></script>
   <script>
+    // 注销所有 Service Worker（不再使用，避免缓存问题）
     if ('serviceWorker' in navigator) {
-      window.addEventListener('load', function() {
-        navigator.serviceWorker.register('./service-worker.js?v=20260802k').then(function(reg) {
-          console.log('SW registered');
-        }).catch(function(err) { console.log('SW failed:', err); });
+      navigator.serviceWorker.getRegistrations().then(function(regs) {
+        regs.forEach(function(r) { r.unregister(); });
       });
     }
   </script>

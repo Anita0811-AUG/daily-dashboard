@@ -27,6 +27,9 @@
     'dashboard_deferred_cal'
   ];
 
+  // 需要合并而非覆盖的数据（按日期/ID去重合并）
+  var MERGE_KEYS = ['dashboard_todos', 'dashboard_weights', 'dashboard_parenting', 'dashboard_spending'];
+
   var apiBase = 'https://api.github.com/repos/' + SYNC_CONFIG.owner + '/' + SYNC_CONFIG.repo + '/contents/' + SYNC_CONFIG.path;
   var uploadTimer = null;
   var isSyncing = false;
@@ -36,7 +39,6 @@
     try { return JSON.parse(localStorage.getItem(key)); } catch(e) { return null; }
   }
 
-  // 直接写入 localStorage（不触发拦截）
   function setLocalRaw(key, val) {
     try { localStorage.setItem(key, JSON.stringify(val)); } catch(e) {}
   }
@@ -46,14 +48,13 @@
     return t && t.length > 10 ? t : null;
   }
 
-  // 记录某个 key 的更新时间
   function touchMeta(key) {
     var meta = getLocal(SYNC_META_KEY) || {};
     meta[key] = Date.now();
     setLocalRaw(SYNC_META_KEY, meta);
   }
 
-  // 拦截 localStorage.setItem 来监听数据变化
+  // 拦截 localStorage.setItem
   var origSetItem = localStorage.setItem.bind(localStorage);
   localStorage.setItem = function(key, value) {
     origSetItem(key, value);
@@ -63,11 +64,64 @@
     }
   };
 
+  // === 数据合并函数 ===
+  // 对象类型数据：按 key 合并（云端优先，本地补充）
+  function mergeObject(localVal, cloudVal) {
+    if (!localVal) return cloudVal;
+    if (!cloudVal) return localVal;
+    var result = {};
+    var allKeys = Object.keys(localVal).concat(Object.keys(cloudVal));
+    var seen = {};
+    allKeys.forEach(function(k) {
+      if (seen[k]) return;
+      seen[k] = true;
+      // 云端有就用云端，否则用本地
+      if (cloudVal[k] !== undefined) {
+        result[k] = cloudVal[k];
+      } else {
+        result[k] = localVal[k];
+      }
+    });
+    return result;
+  }
+
+  // 数组类型数据：合并去重（按日期或内容）
+  function mergeArray(localVal, cloudVal) {
+    if (!localVal || localVal.length === 0) return cloudVal || [];
+    if (!cloudVal || cloudVal.length === 0) return localVal || [];
+
+    var result = [];
+    var seen = {};
+
+    function getItemKey(item) {
+      if (!item) return JSON.stringify(item);
+      // 按日期+内容生成唯一标识
+      if (item.date && item.weight) return 'w_' + item.date + '_' + item.weight;
+      if (item.date && item.amount) return 's_' + item.date + '_' + item.amount + '_' + (item.category || '');
+      if (item.id) return 'id_' + item.id;
+      if (item.date && item.text) return 't_' + item.date + '_' + item.text;
+      if (item.code) return 'c_' + item.code;
+      return JSON.stringify(item);
+    }
+
+    // 先加云端数据
+    cloudVal.forEach(function(item) {
+      var k = getItemKey(item);
+      if (!seen[k]) { seen[k] = true; result.push(item); }
+    });
+    // 再加本地数据（跳过已存在的）
+    localVal.forEach(function(item) {
+      var k = getItemKey(item);
+      if (!seen[k]) { seen[k] = true; result.push(item); }
+    });
+    return result;
+  }
+
   // === 上传（本地 → 云端）===
   function scheduleUpload() {
     if (!getToken()) return;
     if (uploadTimer) clearTimeout(uploadTimer);
-    uploadTimer = setTimeout(doUpload, 3000); // 防抖：3秒内多次修改只上传一次
+    uploadTimer = setTimeout(doUpload, 3000);
   }
 
   function doUpload() {
@@ -82,9 +136,8 @@
 
     SYNC_KEYS.forEach(function(key) {
       var val = getLocal(key);
-      if (val !== null) {
+      if (val !== null && val !== undefined) {
         payload[key] = val;
-        // 如果没有 meta 记录，用当前时间填充
         payload._meta[key] = localMeta[key] || now;
       }
     });
@@ -92,7 +145,6 @@
     var content = btoa(unescape(encodeURIComponent(JSON.stringify(payload))));
     var headers = { 'Authorization': 'token ' + token, 'Accept': 'application/vnd.github+json' };
 
-    // 先获取当前文件的 SHA
     fetch(apiBase, { headers: headers })
       .then(function(resp) {
         if (resp.status === 404) return { sha: null };
@@ -102,23 +154,15 @@
       .then(function(data) {
         var body = { message: 'Sync ' + new Date().toISOString(), content: content };
         if (data && data.sha) body.sha = data.sha;
-
-        return fetch(apiBase, {
-          method: 'PUT',
-          headers: headers,
-          body: JSON.stringify(body)
-        });
+        return fetch(apiBase, { method: 'PUT', headers: headers, body: JSON.stringify(body) });
       })
       .then(function(resp) {
         if (!resp.ok) throw new Error('Upload failed: HTTP ' + resp.status);
         return resp.json();
       })
       .then(function() {
-        // 更新本地 meta 为最新时间
         SYNC_KEYS.forEach(function(key) {
-          if (payload[key] !== undefined) {
-            localMeta[key] = payload._meta[key];
-          }
+          if (payload[key] !== undefined) localMeta[key] = payload._meta[key];
         });
         setLocalRaw(SYNC_META_KEY, localMeta);
         setLocalRaw(SYNC_STATUS_KEY, { status: 'ok', time: now, dir: 'up' });
@@ -131,7 +175,7 @@
       .finally(function() { isSyncing = false; });
   }
 
-  // === 下载（云端 → 本地）===
+  // === 下载（云端 → 本地，合并模式）===
   function doDownload() {
     var token = getToken();
     if (!token) { updateSyncUI('no-token'); return; }
@@ -159,27 +203,42 @@
         SYNC_KEYS.forEach(function(key) {
           if (cloud[key] === undefined) return;
 
-          // 云端该 key 的时间：优先用 meta，没有则用整体上传时间
           var cTime = cloudMeta[key] || cloudTime || 0;
-          // 本地该 key 的时间
           var lTime = localMeta[key] || 0;
           var localVal = getLocal(key);
+          var cloudVal = cloud[key];
 
-          // 同步条件：
-          // 1. 云端时间 > 本地时间
-          // 2. 本地没有该数据
-          // 3. 数据内容不同（兜底）
-          if (cTime > lTime || localVal === null) {
-            setLocalRaw(key, cloud[key]);
+          if (localVal === null) {
+            // 本地没有，直接用云端
+            setLocalRaw(key, cloudVal);
             localMeta[key] = cTime;
             changed = true;
-          } else if (cTime === lTime && localVal !== null) {
-            // 时间相同但内容可能不同（跨设备首次同步）
-            var cloudStr = JSON.stringify(cloud[key]);
-            var localStr = JSON.stringify(localVal);
-            if (cloudStr !== localStr) {
-              setLocalRaw(key, cloud[key]);
-              changed = true;
+          } else {
+            // 本地有，需要合并
+            var merged;
+            if (MERGE_KEYS.indexOf(key) !== -1) {
+              // 合并模式
+              if (Array.isArray(localVal) && Array.isArray(cloudVal)) {
+                merged = mergeArray(localVal, cloudVal);
+              } else if (typeof localVal === 'object' && typeof cloudVal === 'object') {
+                merged = mergeObject(localVal, cloudVal);
+              } else {
+                // 标量类型：云端较新就覆盖
+                merged = (cTime > lTime) ? cloudVal : localVal;
+              }
+              // 如果合并后数据变了，更新
+              if (JSON.stringify(merged) !== JSON.stringify(localVal)) {
+                setLocalRaw(key, merged);
+                localMeta[key] = Math.max(cTime, lTime);
+                changed = true;
+              }
+            } else {
+              // 非合并类型：云端较新就覆盖
+              if (cTime > lTime && JSON.stringify(cloudVal) !== JSON.stringify(localVal)) {
+                setLocalRaw(key, cloudVal);
+                localMeta[key] = cTime;
+                changed = true;
+              }
             }
           }
         });
@@ -188,10 +247,7 @@
           setLocalRaw(SYNC_META_KEY, localMeta);
           setLocalRaw(SYNC_STATUS_KEY, { status: 'ok', time: Date.now(), dir: 'down' });
           updateSyncUI('ok');
-          // 延迟刷新让 UI 先更新
-          setTimeout(function() {
-            location.reload();
-          }, 800);
+          setTimeout(function() { location.reload(); }, 800);
         } else {
           updateSyncUI('ok');
         }
@@ -203,11 +259,10 @@
       .finally(function() { isSyncing = false; });
   }
 
-  // === 手动同步（双向）===
+  // === 手动同步 ===
   function doSync() {
     var token = getToken();
     if (!token) { showTokenDialog(); return; }
-    // 先下载，3秒后再上传
     doDownload();
     setTimeout(function() { doUpload(); }, 3000);
   }
@@ -268,7 +323,6 @@
       return;
     }
 
-    // 添加同步按钮
     var header = document.querySelector('header');
     if (header) {
       header.style.position = 'relative';
@@ -283,7 +337,6 @@
       header.appendChild(btn);
     }
 
-    // 初始状态
     if (!getToken()) {
       updateSyncUI('no-token');
       setTimeout(function() {
@@ -297,11 +350,10 @@
         }
       }, 2000);
     } else {
-      // 有 token，启动时先下载同步
       setTimeout(function() { doDownload(); }, 1500);
     }
 
-    // 定时自动下载同步（每 2 分钟）
+    // 每 2 分钟自动下载
     setInterval(function() {
       if (getToken() && !isSyncing) { doDownload(); }
     }, 2 * 60 * 1000);
@@ -314,7 +366,6 @@
     });
   }
 
-  // 暴露给外部
   window.DashboardSync = {
     sync: doSync,
     upload: doUpload,

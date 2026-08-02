@@ -267,6 +267,144 @@
     setTimeout(function() { doUpload(); }, 3000);
   }
 
+  // === 强制上传所有本地数据 ===
+  function forceUpload() {
+    if (!getToken()) { showTokenDialog(); return; }
+    if (isSyncing) return;
+    isSyncing = true;
+    updateSyncUI('uploading');
+
+    var token = getToken();
+    var now = Date.now();
+    var payload = { _meta: {}, _time: now, _force: true };
+
+    SYNC_KEYS.forEach(function(key) {
+      var val = getLocal(key);
+      if (val !== null && val !== undefined) {
+        payload[key] = val;
+        payload._meta[key] = now; // 强制用当前时间
+      }
+    });
+
+    var content = btoa(unescape(encodeURIComponent(JSON.stringify(payload))));
+    var headers = { 'Authorization': 'token ' + token, 'Accept': 'application/vnd.github+json' };
+
+    fetch(apiBase, { headers: headers })
+      .then(function(resp) {
+        if (resp.status === 404) return { sha: null };
+        if (!resp.ok) throw new Error('HTTP ' + resp.status);
+        return resp.json();
+      })
+      .then(function(data) {
+        var body = { message: 'Force sync ' + new Date().toISOString(), content: content };
+        if (data && data.sha) body.sha = data.sha;
+        return fetch(apiBase, { method: 'PUT', headers: headers, body: JSON.stringify(body) });
+      })
+      .then(function(resp) {
+        if (!resp.ok) throw new Error('Upload failed: HTTP ' + resp.status);
+        return resp.json();
+      })
+      .then(function() {
+        var localMeta = getLocal(SYNC_META_KEY) || {};
+        SYNC_KEYS.forEach(function(key) {
+          if (payload[key] !== undefined) localMeta[key] = now;
+        });
+        setLocalRaw(SYNC_META_KEY, localMeta);
+        updateSyncUI('ok');
+        alert('强制上传完成！请在另一台设备刷新页面');
+      })
+      .catch(function(err) {
+        updateSyncUI('error', err.message);
+        alert('上传失败: ' + err.message);
+      })
+      .finally(function() { isSyncing = false; });
+  }
+
+  // === 强制下载（覆盖本地）===
+  function forceDownload() {
+    var token = getToken();
+    if (!token) { showTokenDialog(); return; }
+    if (isSyncing) return;
+    isSyncing = true;
+    updateSyncUI('downloading');
+
+    var headers = { 'Authorization': 'token ' + token, 'Accept': 'application/vnd.github+json' };
+
+    fetch(apiBase, { headers: headers })
+      .then(function(resp) {
+        if (resp.status === 404) { updateSyncUI('empty'); isSyncing = false; return null; }
+        if (!resp.ok) throw new Error('HTTP ' + resp.status);
+        return resp.json();
+      })
+      .then(function(data) {
+        if (!data) return;
+        var decoded = decodeURIComponent(escape(atob(data.content)));
+        var cloud = JSON.parse(decoded);
+        var cloudMeta = cloud._meta || {};
+        var cloudTime = cloud._time || 0;
+
+        SYNC_KEYS.forEach(function(key) {
+          if (cloud[key] !== undefined) {
+            setLocalRaw(key, cloud[key]);
+          }
+        });
+        setLocalRaw(SYNC_META_KEY, cloudMeta);
+        updateSyncUI('ok');
+        alert('强制下载完成！页面将刷新');
+        setTimeout(function() { location.reload(); }, 500);
+      })
+      .catch(function(err) {
+        updateSyncUI('error', err.message);
+        alert('下载失败: ' + err.message);
+      })
+      .finally(function() { isSyncing = false; });
+  }
+
+  // === 同步详情面板 ===
+  function showSyncPanel() {
+    var localData = {};
+    SYNC_KEYS.forEach(function(key) {
+      var val = getLocal(key);
+      if (val !== null) {
+        var str = JSON.stringify(val);
+        localData[key] = val ? (str.length > 50 ? str.substring(0, 50) + '...' : str) : 'empty';
+      } else {
+        localData[key] = 'NULL';
+      }
+    });
+
+    var modal = document.createElement('div');
+    modal.style.cssText = 'position:fixed;top:0;left:0;right:0;bottom:0;background:rgba(0,0,0,0.5);z-index:9999;display:flex;align-items:center;justify-content:center;';
+    var dataRows = '';
+    Object.keys(localData).forEach(function(key) {
+      dataRows += '<div style="display:flex;justify-content:space-between;font-size:0.8rem;padding:0.2rem 0;border-bottom:1px solid #f1f5f9;"><span style="color:#64748b;">' + key.replace('dashboard_','') + '</span><span style="color:#1e293b;font-family:monospace;">' + localData[key] + '</span></div>';
+    });
+
+    modal.innerHTML =
+      '<div style="background:white;border-radius:16px;padding:1.5rem;max-width:450px;width:90%;max-height:80vh;overflow-y:auto;box-shadow:0 8px 32px rgba(0,0,0,0.2);">' +
+        '<h3 style="margin:0 0 1rem;font-size:1.1rem;color:#1e293b;">同步管理</h3>' +
+        '<div style="margin-bottom:1rem;">' + dataRows + '</div>' +
+        '<div style="display:flex;gap:0.5rem;flex-wrap:wrap;margin-bottom:1rem;">' +
+          '<button id="sync-do-sync" style="flex:1;padding:0.6rem;border:none;border-radius:10px;background:linear-gradient(135deg,#6366f1,#8b5cf6);color:white;cursor:pointer;font-size:0.85rem;font-weight:600;">双向同步</button>' +
+          '<button id="sync-force-up" style="flex:1;padding:0.6rem;border:none;border-radius:10px;background:#10b981;color:white;cursor:pointer;font-size:0.85rem;font-weight:600;">强制上传</button>' +
+          '<button id="sync-force-down" style="flex:1;padding:0.6rem;border:none;border-radius:10px;background:#f59e0b;color:white;cursor:pointer;font-size:0.85rem;font-weight:600;">强制下载</button>' +
+        '</div>' +
+        '<div style="display:flex;gap:0.5rem;">' +
+          '<button id="sync-set-token" style="flex:1;padding:0.5rem;border:1px solid #e2e8f0;border-radius:10px;background:white;color:#64748b;cursor:pointer;font-size:0.8rem;">设置Token</button>' +
+          '<button id="sync-close" style="flex:1;padding:0.5rem;border:1px solid #e2e8f0;border-radius:10px;background:white;color:#64748b;cursor:pointer;font-size:0.8rem;">关闭</button>' +
+        '</div>' +
+        '<p style="font-size:0.75rem;color:#94a3b8;margin-top:0.8rem;">强制上传: 用本地数据覆盖云端<br>强制下载: 用云端数据覆盖本地<br>双向同步: 先下载合并再上传</p>' +
+      '</div>';
+    document.body.appendChild(modal);
+
+    modal.querySelector('#sync-do-sync').onclick = function() { modal.remove(); doSync(); };
+    modal.querySelector('#sync-force-up').onclick = function() { modal.remove(); forceUpload(); };
+    modal.querySelector('#sync-force-down').onclick = function() { modal.remove(); forceDownload(); };
+    modal.querySelector('#sync-set-token').onclick = function() { modal.remove(); showTokenDialog(); };
+    modal.querySelector('#sync-close').onclick = function() { modal.remove(); };
+    modal.addEventListener('click', function(e) { if (e.target === modal) modal.remove(); });
+  }
+
   // === Token 设置弹窗 ===
   function showTokenDialog() {
     var existing = getToken() || '';
@@ -332,7 +470,7 @@
       btn.title = '点击同步数据';
       btn.innerHTML = '<span style="font-size:0.95rem;">☁️</span><span style="font-size:0.75rem;">同步</span>';
       btn.onclick = function() {
-        if (getToken()) { doSync(); } else { showTokenDialog(); }
+        if (getToken()) { showSyncPanel(); } else { showTokenDialog(); }
       };
       header.appendChild(btn);
     }

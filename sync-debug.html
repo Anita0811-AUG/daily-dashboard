@@ -1,0 +1,113 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>同步诊断</title>
+  <style>
+    body { font-family: -apple-system, sans-serif; padding: 1rem; background: #f0f2f5; color: #1e293b; }
+    .box { background: white; padding: 1.5rem; border-radius: 12px; margin-bottom: 1rem; }
+    h2 { font-size: 1.1rem; margin: 0 0 1rem; }
+    pre { font-size: 0.75rem; background: #f8fafc; padding: 0.5rem; border-radius: 8px; overflow-x: auto; white-space: pre-wrap; word-break: break-all; }
+    button { padding: 0.6rem 1.2rem; border: none; border-radius: 8px; background: #6366f1; color: white; font-size: 0.9rem; cursor: pointer; margin: 0.3rem; }
+    .ok { color: #10b981; } .err { color: #ef4444; }
+  </style>
+</head>
+<body>
+  <div class="box">
+    <h2>同步诊断工具</h2>
+    <button onclick="checkToken()">1. 检查Token</button>
+    <button onclick="checkLocal()">2. 检查本地数据</button>
+    <button onclick="checkCloud()">3. 检查云端数据</button>
+    <button onclick="doForceDown()">4. 强制下载</button>
+    <button onclick="location.href='./daily-dashboard.html'">返回看板</button>
+    <pre id="output">点击按钮开始诊断...</pre>
+  </div>
+
+  <script>
+    var TOKEN_KEY = 'dashboard_github_token';
+    var SYNC_KEYS = [
+      'dashboard_todos','dashboard_weights','dashboard_weight_goal',
+      'dashboard_calorie_profile','dashboard_baby_profile','dashboard_parenting',
+      'dashboard_vaccinated','dashboard_spending','dashboard_stock_list',
+      'dashboard_fund_list','dashboard_deferred_cal'
+    ];
+    var apiBase = 'https://api.github.com/repos/Anita0811-AUG/daily-dashboard/contents/sync-data.json';
+    var out = document.getElementById('output');
+
+    function log(msg) { out.textContent += '\n' + msg; }
+    function clear() { out.textContent = ''; }
+
+    function getToken() {
+      var t = localStorage.getItem(TOKEN_KEY);
+      return t && t.length > 10 ? t : null;
+    }
+
+    function checkToken() {
+      clear();
+      var t = getToken();
+      if (t) { log('✅ Token存在: ' + t.substring(0,10) + '...'); }
+      else { log('❌ 没有Token！请先在看板中设置Token'); }
+    }
+
+    function checkLocal() {
+      clear();
+      log('=== 本地数据 ===');
+      SYNC_KEYS.forEach(function(key) {
+        var val = localStorage.getItem(key);
+        if (val) { log('✅ ' + key + ': ' + val.substring(0, 80)); }
+        else { log('❌ ' + key + ': NULL'); }
+      });
+    }
+
+    function checkCloud() {
+      clear();
+      var t = getToken();
+      if (!t) { log('❌ 没有Token'); return; }
+      log('正在获取云端数据...');
+      fetch(apiBase, { headers: { 'Authorization': 'token ' + t, 'Accept': 'application/vnd.github+json' } })
+        .then(function(r) { return r.json(); })
+        .then(function(data) {
+          var decoded = decodeURIComponent(escape(atob(data.content)));
+          var cloud = JSON.parse(decoded);
+          log('=== 云端数据 ===');
+          log('更新时间: ' + new Date(cloud._time).toLocaleString());
+          SYNC_KEYS.forEach(function(key) {
+            if (cloud[key] !== undefined) {
+              log('✅ ' + key + ': ' + JSON.stringify(cloud[key]).substring(0, 80));
+            } else {
+              log('❌ ' + key + ': 不存在');
+            }
+          });
+        })
+        .catch(function(err) { log('❌ 获取失败: ' + err.message); });
+    }
+
+    function doForceDown() {
+      clear();
+      var t = getToken();
+      if (!t) { log('❌ 没有Token'); return; }
+      log('正在强制下载...');
+      fetch(apiBase, { headers: { 'Authorization': 'token ' + t, 'Accept': 'application/vnd.github+json' } })
+        .then(function(r) { return r.json(); })
+        .then(function(data) {
+          var decoded = decodeURIComponent(escape(atob(data.content)));
+          var cloud = JSON.parse(decoded);
+          log('云端数据已获取，正在写入本地...');
+          var count = 0;
+          SYNC_KEYS.forEach(function(key) {
+            if (cloud[key] !== undefined) {
+              localStorage.setItem(key, JSON.stringify(cloud[key]));
+              count++;
+              log('✅ 已写入: ' + key);
+            }
+          });
+          log('\n共写入 ' + count + ' 项数据');
+          log('2秒后跳转到看板...');
+          setTimeout(function() { location.href = './daily-dashboard.html'; }, 2000);
+        })
+        .catch(function(err) { log('❌ 下载失败: ' + err.message); });
+    }
+  </script>
+</body>
+</html>

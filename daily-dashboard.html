@@ -1459,16 +1459,37 @@
   </div>
 
   <script src="./_shared/js/echarts.min.js"></script>
-  <script src="./assets/charts.js?v=20260803a"></script>
-  <script src="./assets/ics-parser.js?v=20260803a"></script>
-  <script src="./assets/app.js?v=20260803a"></script>
-  <script src="./assets/sync.js?v=20260803a"></script>
+  <script src="./assets/charts.js?v=20260803b"></script>
+  <script src="./assets/ics-parser.js?v=20260803b"></script>
+  <script src="./assets/app.js?v=20260803b"></script>
+  <script src="./assets/sync.js?v=20260803b"></script>
   <script>
-    // 注销所有 Service Worker（不再使用，避免缓存问题）
+    // 彻底清除所有 Service Worker 和缓存
     if ('serviceWorker' in navigator) {
-      navigator.serviceWorker.getRegistrations().then(function(regs) {
-        regs.forEach(function(r) { r.unregister(); });
+      // 1. 先注册自毁版 SW（覆盖旧 SW）
+      navigator.serviceWorker.register('./service-worker.js').then(function(reg) {
+        console.log('Self-destruct SW registered, clearing cache...');
+      }).catch(function(err) {
+        console.log('SW register failed:', err);
       });
+      
+      // 2. 同时注销所有已注册的 SW
+      navigator.serviceWorker.getRegistrations().then(function(regs) {
+        regs.forEach(function(r) { 
+          r.unregister();
+          console.log('Unregistered SW:', r.scope);
+        });
+      });
+      
+      // 3. 清除所有缓存
+      if ('caches' in window) {
+        caches.keys().then(function(names) {
+          names.forEach(function(name) {
+            caches.delete(name);
+            console.log('Deleted cache:', name);
+          });
+        });
+      }
     }
   </script>
 </body>

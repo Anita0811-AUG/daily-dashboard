@@ -1,0 +1,26 @@
+{
+  "name": "日常管理看板",
+  "short_name": "看板",
+  "description": "日常管理看板 - 待办、体重、花费、投资、新闻、育儿",
+  "start_url": "./daily-dashboard.html",
+  "display": "standalone",
+  "orientation": "any",
+  "background_color": "#f0f2f5",
+  "theme_color": "#6366f1",
+  "scope": "./",
+  "lang": "zh-CN",
+  "icons": [
+    {
+      "src": "icon-192.png",
+      "sizes": "192x192",
+      "type": "image/png",
+      "purpose": "any maskable"
+    },
+    {
+      "src": "icon-512.png",
+      "sizes": "512x512",
+      "type": "image/png",
+      "purpose": "any maskable"
+    }
+  ]
+}

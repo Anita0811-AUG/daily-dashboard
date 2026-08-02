@@ -1,0 +1,14 @@
+# 隐私配置（含个人 iCloud 日历链接）
+calendar_config.txt
+
+# 本地同步脚本（GitHub Pages 无后端，不需要）
+sync_calendar.py
+sync_calendar.bat
+
+# Python
+__pycache__/
+*.pyc
+
+# 系统
+.DS_Store
+Thumbs.db

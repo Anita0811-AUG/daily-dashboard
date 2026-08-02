@@ -1,12 +1,12 @@
 // service-worker.js - PWA 离线缓存
-var CACHE_NAME = 'dashboard-v20260802i';
+var CACHE_NAME = 'dashboard-v20260802j';
 var CACHE_URLS = [
   './daily-dashboard.html',
   './manifest.json',
-  './assets/app.js?v=20260802i',
-  './assets/charts.js?v=20260802i',
-  './assets/ics-parser.js?v=20260802i',
-  './assets/sync.js?v=20260802i',
+  './assets/app.js?v=20260802j',
+  './assets/charts.js?v=20260802j',
+  './assets/ics-parser.js?v=20260802j',
+  './assets/sync.js?v=20260802j',
   './_shared/js/echarts.min.js'
 ];
 

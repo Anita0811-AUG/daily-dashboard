@@ -35,9 +35,12 @@
   function getLocal(key) {
     try { return JSON.parse(localStorage.getItem(key)); } catch(e) { return null; }
   }
-  function setLocal(key, val) {
+
+  // 直接写入 localStorage（不触发拦截）
+  function setLocalRaw(key, val) {
     try { localStorage.setItem(key, JSON.stringify(val)); } catch(e) {}
   }
+
   function getToken() {
     var t = localStorage.getItem(TOKEN_KEY);
     return t && t.length > 10 ? t : null;
@@ -47,10 +50,10 @@
   function touchMeta(key) {
     var meta = getLocal(SYNC_META_KEY) || {};
     meta[key] = Date.now();
-    setLocal(SYNC_META_KEY, meta);
+    setLocalRaw(SYNC_META_KEY, meta);
   }
 
-  // 监听 saveData 调用 —— 通过拦截 localStorage.setItem
+  // 拦截 localStorage.setItem 来监听数据变化
   var origSetItem = localStorage.setItem.bind(localStorage);
   localStorage.setItem = function(key, value) {
     origSetItem(key, value);
@@ -64,7 +67,7 @@
   function scheduleUpload() {
     if (!getToken()) return;
     if (uploadTimer) clearTimeout(uploadTimer);
-    uploadTimer = setTimeout(doUpload, 5000); // 防抖：5秒内多次修改只上传一次
+    uploadTimer = setTimeout(doUpload, 3000); // 防抖：3秒内多次修改只上传一次
   }
 
   function doUpload() {
@@ -73,10 +76,17 @@
     updateSyncUI('uploading');
 
     var token = getToken();
-    var payload = { _meta: getLocal(SYNC_META_KEY) || {}, _time: Date.now() };
+    var now = Date.now();
+    var localMeta = getLocal(SYNC_META_KEY) || {};
+    var payload = { _meta: {}, _time: now };
+
     SYNC_KEYS.forEach(function(key) {
       var val = getLocal(key);
-      if (val !== null) payload[key] = val;
+      if (val !== null) {
+        payload[key] = val;
+        // 如果没有 meta 记录，用当前时间填充
+        payload._meta[key] = localMeta[key] || now;
+      }
     });
 
     var content = btoa(unescape(encodeURIComponent(JSON.stringify(payload))));
@@ -85,12 +95,12 @@
     // 先获取当前文件的 SHA
     fetch(apiBase, { headers: headers })
       .then(function(resp) {
-        if (resp.status === 404) return { sha: null }; // 文件不存在
+        if (resp.status === 404) return { sha: null };
         if (!resp.ok) throw new Error('HTTP ' + resp.status);
         return resp.json();
       })
       .then(function(data) {
-        var body = { message: 'Sync dashboard data ' + new Date().toISOString(), content: content };
+        var body = { message: 'Sync ' + new Date().toISOString(), content: content };
         if (data && data.sha) body.sha = data.sha;
 
         return fetch(apiBase, {
@@ -104,11 +114,18 @@
         return resp.json();
       })
       .then(function() {
-        setLocal(SYNC_STATUS_KEY, { status: 'ok', time: Date.now(), dir: 'up' });
+        // 更新本地 meta 为最新时间
+        SYNC_KEYS.forEach(function(key) {
+          if (payload[key] !== undefined) {
+            localMeta[key] = payload._meta[key];
+          }
+        });
+        setLocalRaw(SYNC_META_KEY, localMeta);
+        setLocalRaw(SYNC_STATUS_KEY, { status: 'ok', time: now, dir: 'up' });
         updateSyncUI('ok');
       })
       .catch(function(err) {
-        setLocal(SYNC_STATUS_KEY, { status: 'error', time: Date.now(), msg: err.message });
+        setLocalRaw(SYNC_STATUS_KEY, { status: 'error', time: now, msg: err.message });
         updateSyncUI('error', err.message);
       })
       .finally(function() { isSyncing = false; });
@@ -135,35 +152,52 @@
         var decoded = decodeURIComponent(escape(atob(data.content)));
         var cloud = JSON.parse(decoded);
         var cloudMeta = cloud._meta || {};
+        var cloudTime = cloud._time || 0;
         var localMeta = getLocal(SYNC_META_KEY) || {};
         var changed = false;
 
         SYNC_KEYS.forEach(function(key) {
           if (cloud[key] === undefined) return;
-          var cloudTime = cloudMeta[key] || 0;
-          var localTime = localMeta[key] || 0;
-          // 云端数据较新，或本地没有该数据
-          if (cloudTime > localTime || getLocal(key) === null) {
-            setLocal(key, cloud[key]);
-            localMeta[key] = cloudTime;
+
+          // 云端该 key 的时间：优先用 meta，没有则用整体上传时间
+          var cTime = cloudMeta[key] || cloudTime || 0;
+          // 本地该 key 的时间
+          var lTime = localMeta[key] || 0;
+          var localVal = getLocal(key);
+
+          // 同步条件：
+          // 1. 云端时间 > 本地时间
+          // 2. 本地没有该数据
+          // 3. 数据内容不同（兜底）
+          if (cTime > lTime || localVal === null) {
+            setLocalRaw(key, cloud[key]);
+            localMeta[key] = cTime;
             changed = true;
+          } else if (cTime === lTime && localVal !== null) {
+            // 时间相同但内容可能不同（跨设备首次同步）
+            var cloudStr = JSON.stringify(cloud[key]);
+            var localStr = JSON.stringify(localVal);
+            if (cloudStr !== localStr) {
+              setLocalRaw(key, cloud[key]);
+              changed = true;
+            }
           }
         });
 
         if (changed) {
-          setLocal(SYNC_META_KEY, localMeta);
-          setLocal(SYNC_STATUS_KEY, { status: 'ok', time: Date.now(), dir: 'down' });
-          // 重新渲染页面
-          if (typeof window.onSyncComplete === 'function') {
-            window.onSyncComplete();
-          } else {
-            setTimeout(function() { location.reload(); }, 500);
-          }
+          setLocalRaw(SYNC_META_KEY, localMeta);
+          setLocalRaw(SYNC_STATUS_KEY, { status: 'ok', time: Date.now(), dir: 'down' });
+          updateSyncUI('ok');
+          // 延迟刷新让 UI 先更新
+          setTimeout(function() {
+            location.reload();
+          }, 800);
+        } else {
+          updateSyncUI('ok');
         }
-        updateSyncUI('ok');
       })
       .catch(function(err) {
-        setLocal(SYNC_STATUS_KEY, { status: 'error', time: Date.now(), msg: err.message });
+        setLocalRaw(SYNC_STATUS_KEY, { status: 'error', time: Date.now(), msg: err.message });
         updateSyncUI('error', err.message);
       })
       .finally(function() { isSyncing = false; });
@@ -173,6 +207,7 @@
   function doSync() {
     var token = getToken();
     if (!token) { showTokenDialog(); return; }
+    // 先下载，3秒后再上传
     doDownload();
     setTimeout(function() { doUpload(); }, 3000);
   }
@@ -198,7 +233,7 @@
     modal.querySelector('#sync-token-save').onclick = function() {
       var val = modal.querySelector('#sync-token-input').value.trim();
       if (val) {
-        localStorage.setItem(TOKEN_KEY, val);
+        origSetItem.call(localStorage, TOKEN_KEY, val);
         modal.remove();
         doDownload();
       }
@@ -228,13 +263,12 @@
 
   // === 初始化 ===
   function init() {
-    // 等待 DOM ready
     if (document.readyState === 'loading') {
       document.addEventListener('DOMContentLoaded', init);
       return;
     }
 
-    // 如果页面已有 header，在 header 旁边添加同步按钮
+    // 添加同步按钮
     var header = document.querySelector('header');
     if (header) {
       header.style.position = 'relative';
@@ -252,7 +286,6 @@
     // 初始状态
     if (!getToken()) {
       updateSyncUI('no-token');
-      // 首次使用，提示设置 token
       setTimeout(function() {
         if (!getToken()) {
           var tip = document.createElement('div');
@@ -264,14 +297,21 @@
         }
       }, 2000);
     } else {
-      // 有 token，启动时先下载
+      // 有 token，启动时先下载同步
       setTimeout(function() { doDownload(); }, 1500);
     }
 
-    // 定时自动同步（每 5 分钟）
+    // 定时自动下载同步（每 2 分钟）
     setInterval(function() {
-      if (getToken()) { doDownload(); }
-    }, 5 * 60 * 1000);
+      if (getToken() && !isSyncing) { doDownload(); }
+    }, 2 * 60 * 1000);
+
+    // 页面重新可见时自动同步
+    document.addEventListener('visibilitychange', function() {
+      if (!document.hidden && getToken() && !isSyncing) {
+        doDownload();
+      }
+    });
   }
 
   // 暴露给外部

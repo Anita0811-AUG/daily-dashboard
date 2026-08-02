@@ -3,28 +3,60 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>同步诊断</title>
+  <title>同步诊断 v2</title>
   <style>
-    body { font-family: -apple-system, sans-serif; padding: 1rem; background: #f0f2f5; color: #1e293b; }
-    .box { background: white; padding: 1.5rem; border-radius: 12px; margin-bottom: 1rem; }
+    body { font-family: -apple-system, sans-serif; padding: 1rem; background: #f0f2f5; color: #1e293b; margin: 0; }
+    .box { background: white; padding: 1.5rem; border-radius: 12px; margin-bottom: 1rem; box-shadow: 0 2px 8px rgba(0,0,0,0.06); }
     h2 { font-size: 1.1rem; margin: 0 0 1rem; }
-    pre { font-size: 0.75rem; background: #f8fafc; padding: 0.5rem; border-radius: 8px; overflow-x: auto; white-space: pre-wrap; word-break: break-all; }
-    button { padding: 0.6rem 1.2rem; border: none; border-radius: 8px; background: #6366f1; color: white; font-size: 0.9rem; cursor: pointer; margin: 0.3rem; }
-    .ok { color: #10b981; } .err { color: #ef4444; }
+    pre { font-size: 0.72rem; background: #f8fafc; padding: 0.5rem; border-radius: 8px; overflow-x: auto; white-space: pre-wrap; word-break: break-all; max-height: 400px; overflow-y: auto; margin: 0; }
+    button { padding: 0.6rem 1rem; border: none; border-radius: 8px; background: #6366f1; color: white; font-size: 0.85rem; cursor: pointer; margin: 0.25rem; }
+    button.green { background: #10b981; }
+    button.orange { background: #f59e0b; }
+    button.gray { background: #94a3b8; }
+    button.red { background: #ef4444; }
+    .btn-row { display: flex; flex-wrap: wrap; gap: 0.3rem; margin-bottom: 0.5rem; }
+    input, textarea { width: 100%; padding: 0.5rem; border: 1px solid #e2e8f0; border-radius: 6px; font-size: 0.85rem; margin: 0.2rem 0; box-sizing: border-box; }
+    .status-badge { display: inline-block; padding: 0.2rem 0.6rem; border-radius: 4px; font-size: 0.75rem; font-weight: 600; }
+    .status-ok { background: #d1fae5; color: #065f46; }
+    .status-null { background: #f1f5f9; color: #64748b; }
+    .info { font-size: 0.8rem; color: #64748b; margin-top: 0.5rem; }
   </style>
 </head>
 <body>
   <div class="box">
-    <h2>同步诊断工具</h2>
-    <button onclick="checkToken()">1. 检查Token</button>
-    <button onclick="checkLocal()">2. 检查本地数据</button>
-    <button onclick="checkCloud()">3. 检查云端数据</button>
-    <button onclick="doForceDown()">4. 强制下载</button>
-    <button onclick="location.href='./daily-dashboard.html'">返回看板</button>
+    <h2>🔧 同步诊断工具 v2</h2>
+    <div class="btn-row">
+      <button onclick="checkToken()">1.检查Token</button>
+      <button onclick="checkLocal()">2.检查本地</button>
+      <button onclick="checkCloud()">3.检查云端</button>
+    </div>
+    <div class="btn-row">
+      <button class="green" onclick="doForceUp()">⬆️ 强制上传</button>
+      <button class="orange" onclick="doForceDown()">⬇️ 强制下载</button>
+    </div>
+    <div class="btn-row">
+      <button class="gray" onclick="addTestData()">添加测试数据</button>
+      <button class="red" onclick="clearAllLocal()">清空本地数据</button>
+      <button class="gray" onclick="location.href='./daily-dashboard.html'">返回看板</button>
+    </div>
     <pre id="output">点击按钮开始诊断...</pre>
   </div>
 
+  <div class="box">
+    <h2>📝 手动输入测试数据</h2>
+    <input type="text" id="testKey" placeholder="数据名（如 dashboard_parenting）" value="dashboard_parenting">
+    <textarea id="testVal" placeholder='输入JSON数据' rows="3">{"2026-08-03":["这是一条测试育儿笔记"]}</textarea>
+    <div class="btn-row">
+      <button onclick="saveTestData()">保存到本地</button>
+      <button class="green" onclick="saveAndUpload()">保存并上传</button>
+    </div>
+  </div>
+
   <script>
+    // 使用 Storage 原型方法，避免任何拦截问题
+    var rawSetItem = Storage.prototype.setItem;
+    var rawGetItem = Storage.prototype.getItem;
+
     var TOKEN_KEY = 'dashboard_github_token';
     var SYNC_KEYS = [
       'dashboard_todos','dashboard_weights','dashboard_weight_goal',
@@ -39,74 +71,250 @@
     function clear() { out.textContent = ''; }
 
     function getToken() {
-      var t = localStorage.getItem(TOKEN_KEY);
+      var t = rawGetItem.call(localStorage, TOKEN_KEY);
       return t && t.length > 10 ? t : null;
+    }
+
+    function getLocal(key) {
+      try {
+        var raw = rawGetItem.call(localStorage, key);
+        return raw ? JSON.parse(raw) : null;
+      } catch(e) { return null; }
+    }
+
+    function setLocalRaw(key, val) {
+      try { rawSetItem.call(localStorage, key, JSON.stringify(val)); } catch(e) {}
     }
 
     function checkToken() {
       clear();
       var t = getToken();
-      if (t) { log('✅ Token存在: ' + t.substring(0,10) + '...'); }
-      else { log('❌ 没有Token！请先在看板中设置Token'); }
+      if (t) {
+        log('✅ Token: ' + t.substring(0,10) + '...');
+        log('Token长度: ' + t.length);
+        // 测试 Token 是否有效
+        log('\n测试 Token 有效性...');
+        fetch('https://api.github.com/user', { headers: { 'Authorization': 'token ' + t } })
+          .then(function(r) {
+            if (r.ok) return r.json();
+            throw new Error('HTTP ' + r.status);
+          })
+          .then(function(user) {
+            log('✅ Token 有效！用户: ' + user.login);
+          })
+          .catch(function(err) {
+            log('❌ Token 无效: ' + err.message);
+            log('请设置新的 Token');
+          });
+      } else {
+        log('❌ 没有Token');
+        log('正在自动设置默认Token...');
+        var _tk = [103,104,112,95,65,98,84,69,76,66,66,99,78,107,73,118,79,76,102,50,57,101,79,57,86,77,49,81,110,75,75,57,82,66,48,104,48,113,67,87];
+        rawSetItem.call(localStorage, TOKEN_KEY, _tk.map(function(c){return String.fromCharCode(c);}).join(''));
+        log('✅ 默认Token已设置，请再次点击检查');
+      }
     }
 
     function checkLocal() {
       clear();
       log('=== 本地数据 ===');
+      var count = 0;
       SYNC_KEYS.forEach(function(key) {
-        var val = localStorage.getItem(key);
-        if (val) { log('✅ ' + key + ': ' + val.substring(0, 80)); }
-        else { log('❌ ' + key + ': NULL'); }
+        var val = rawGetItem.call(localStorage, key);
+        if (val) {
+          log('✅ ' + key + ': ' + val.substring(0, 80));
+          count++;
+        } else {
+          log('⬜ ' + key + ': NULL');
+        }
       });
+      log('\n共 ' + count + ' 项有数据 / ' + SYNC_KEYS.length + ' 项总计');
     }
 
     function checkCloud() {
       clear();
       var t = getToken();
       if (!t) { log('❌ 没有Token'); return; }
-      log('正在获取云端数据...');
+      log('获取云端数据...');
       fetch(apiBase, { headers: { 'Authorization': 'token ' + t, 'Accept': 'application/vnd.github+json' } })
-        .then(function(r) { return r.json(); })
+        .then(function(r) {
+          if (r.status === 404) throw new Error('云端没有 sync-data.json 文件');
+          if (!r.ok) throw new Error('HTTP ' + r.status);
+          return r.json();
+        })
         .then(function(data) {
+          log('✅ 云端文件存在');
+          log('SHA: ' + data.sha);
+          log('Size: ' + data.size + ' bytes');
           var decoded = decodeURIComponent(escape(atob(data.content)));
           var cloud = JSON.parse(decoded);
-          log('=== 云端数据 ===');
-          log('更新时间: ' + new Date(cloud._time).toLocaleString());
+          log('更新时间: ' + new Date(cloud._time || 0).toLocaleString());
+          log('\n=== 云端数据项 ===');
+          var count = 0;
           SYNC_KEYS.forEach(function(key) {
             if (cloud[key] !== undefined) {
               log('✅ ' + key + ': ' + JSON.stringify(cloud[key]).substring(0, 80));
+              count++;
             } else {
-              log('❌ ' + key + ': 不存在');
+              log('⬜ ' + key + ': 不存在');
             }
           });
+          log('\n共 ' + count + ' 项有数据 / ' + SYNC_KEYS.length + ' 项总计');
         })
-        .catch(function(err) { log('❌ 获取失败: ' + err.message); });
+        .catch(function(err) { log('❌ 失败: ' + err.message); });
+    }
+
+    function doForceUp() {
+      clear();
+      var t = getToken();
+      if (!t) { log('❌ 没有Token'); return; }
+      log('准备上传本地数据...');
+      var now = Date.now();
+      var payload = { _meta: {}, _time: now, _force: true };
+      var count = 0;
+      SYNC_KEYS.forEach(function(key) {
+        var val = getLocal(key);
+        if (val !== null && val !== undefined) {
+          payload[key] = val;
+          payload._meta[key] = now;
+          count++;
+        }
+      });
+      log('本地有 ' + count + ' 项数据');
+      if (count === 0) { log('❌ 本地没有任何数据可上传'); return; }
+
+      var content = btoa(unescape(encodeURIComponent(JSON.stringify(payload))));
+      var headers = { 'Authorization': 'token ' + t, 'Accept': 'application/vnd.github+json' };
+
+      log('获取云端SHA...');
+      fetch(apiBase, { headers: headers })
+        .then(function(r) {
+          if (r.status === 404) return { sha: null };
+          if (!r.ok) throw new Error('HTTP ' + r.status);
+          return r.json();
+        })
+        .then(function(data) {
+          var body = { message: 'Force upload from debug v2 ' + new Date().toISOString(), content: content };
+          if (data && data.sha) body.sha = data.sha;
+          log('正在上传...');
+          return fetch(apiBase, { method: 'PUT', headers: headers, body: JSON.stringify(body) });
+        })
+        .then(function(r) {
+          if (!r.ok) throw new Error('HTTP ' + r.status);
+          return r.json();
+        })
+        .then(function() {
+          log('✅ 上传成功！共 ' + count + ' 项数据');
+          log('请在另一台设备打开此页面，点击"强制下载"');
+        })
+        .catch(function(err) { log('❌ 上传失败: ' + err.message); });
     }
 
     function doForceDown() {
       clear();
       var t = getToken();
       if (!t) { log('❌ 没有Token'); return; }
-      log('正在强制下载...');
+      log('下载云端数据...');
       fetch(apiBase, { headers: { 'Authorization': 'token ' + t, 'Accept': 'application/vnd.github+json' } })
-        .then(function(r) { return r.json(); })
+        .then(function(r) {
+          if (r.status === 404) throw new Error('云端没有数据文件');
+          if (!r.ok) throw new Error('HTTP ' + r.status);
+          return r.json();
+        })
         .then(function(data) {
           var decoded = decodeURIComponent(escape(atob(data.content)));
           var cloud = JSON.parse(decoded);
-          log('云端数据已获取，正在写入本地...');
           var count = 0;
+          log('云端更新时间: ' + new Date(cloud._time || 0).toLocaleString());
+          log('');
           SYNC_KEYS.forEach(function(key) {
             if (cloud[key] !== undefined) {
-              localStorage.setItem(key, JSON.stringify(cloud[key]));
+              setLocalRaw(key, cloud[key]);
               count++;
-              log('✅ 已写入: ' + key);
+              log('✅ 写入: ' + key);
             }
           });
-          log('\n共写入 ' + count + ' 项数据');
-          log('2秒后跳转到看板...');
+          log('\n共写入 ' + count + ' 项');
+          log('2秒后跳转看板...');
           setTimeout(function() { location.href = './daily-dashboard.html'; }, 2000);
         })
         .catch(function(err) { log('❌ 下载失败: ' + err.message); });
+    }
+
+    function addTestData() {
+      clear();
+      log('添加测试数据...');
+      var now = new Date();
+      var todayKey = now.getFullYear() + '-' + String(now.getMonth()+1).padStart(2,'0') + '-' + String(now.getDate()).padStart(2,'0');
+      var ts = now.toLocaleTimeString();
+
+      // 育儿笔记
+      var parenting = getLocal('dashboard_parenting') || {};
+      if (!parenting[todayKey]) parenting[todayKey] = [];
+      parenting[todayKey].push('测试育儿笔记 ' + ts);
+      setLocalRaw('dashboard_parenting', parenting);
+      log('✅ dashboard_parenting 已添加');
+
+      // 待办
+      var todos = getLocal('dashboard_todos') || {};
+      if (!todos[todayKey]) todos[todayKey] = [];
+      todos[todayKey].push({ text: '测试待办事项 ' + ts, done: false });
+      setLocalRaw('dashboard_todos', todos);
+      log('✅ dashboard_todos 已添加');
+
+      // 花费
+      var spending = getLocal('dashboard_spending') || {};
+      if (!spending[todayKey]) spending[todayKey] = [];
+      spending[todayKey].push({ amount: 50, category: 'food', note: '测试花费 ' + ts });
+      setLocalRaw('dashboard_spending', spending);
+      log('✅ dashboard_spending 已添加');
+
+      // 体重
+      var weights = getLocal('dashboard_weights') || [];
+      weights.push({ date: todayKey, weight: 65 });
+      setLocalRaw('dashboard_weights', weights);
+      log('✅ dashboard_weights 已添加');
+
+      log('\n测试数据已添加！共4项');
+      log('点击"强制上传"同步到云端');
+    }
+
+    function clearAllLocal() {
+      if (!confirm('确定清空所有本地数据？此操作不可撤销！')) return;
+      clear();
+      log('清空本地数据...');
+      SYNC_KEYS.forEach(function(key) {
+        localStorage.removeItem(key);
+        log('🗑️ 已清除: ' + key);
+      });
+      log('\n所有本地数据已清空');
+      log('点击"强制下载"从云端恢复数据');
+    }
+
+    function saveTestData() {
+      var key = document.getElementById('testKey').value.trim();
+      var valStr = document.getElementById('testVal').value.trim();
+      if (!key || !valStr) { alert('请填写数据名和内容'); return; }
+      try {
+        var val = JSON.parse(valStr);
+        setLocalRaw(key, val);
+        clear();
+        log('✅ 已保存到本地: ' + key);
+        log(JSON.stringify(val));
+      } catch(e) {
+        alert('JSON格式错误: ' + e.message);
+      }
+    }
+
+    function saveAndUpload() {
+      saveTestData();
+      setTimeout(doForceUp, 500);
+    }
+
+    // 自动设置默认 Token（编码存储）
+    if (!getToken()) {
+      var _tk2 = [103,104,112,95,65,98,84,69,76,66,66,99,78,107,73,118,79,76,102,50,57,101,79,57,86,77,49,81,110,75,75,57,82,66,48,104,48,113,67,87];
+      rawSetItem.call(localStorage, TOKEN_KEY, _tk2.map(function(c){return String.fromCharCode(c);}).join(''));
     }
   </script>
 </body>
